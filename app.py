@@ -18,11 +18,11 @@ MAPA_DIAMETROS = {
     30: "63mm", 32: "63mm", 34: "63mm",
     6: "75mm", 215: "75mm",
     3: "90mm", 134: "90mm",
-    4: "110mm", 171: "110mm",
+    4: "110mm",
     1: "140mm", 231: "140mm",
     2: "160mm", 52: "160mm",
     200: "200mm", 202: "200mm",
-    5: "250mm", 160: "250mm", 170: "250mm",
+    5: "250mm", 171: "250mm", 170: "250mm",
     100: "315mm", 102: "315mm", 104: "315mm"
 }
 
@@ -435,4 +435,5 @@ if archivo_subido is not None:
                         )
 
             except Exception as e:
+
                 st.error(f"Ocurrió un error procesando el archivo. Detalles técnicos: {e}")

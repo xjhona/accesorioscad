@@ -3,6 +3,7 @@ import math
 import os
 import re
 import pandas as pd
+import streamlit as st
 from collections import defaultdict
 
 # --- CONFIGURACIÓN GENERAL ---
@@ -375,14 +376,69 @@ def analizar_plano(ruta_archivo):
         pd.DataFrame(resumen_excel).to_excel(writer, sheet_name="BOM - Para Compras", index=False)
         pd.DataFrame(detalles_nodos_excel).to_excel(writer, sheet_name="Replanteo Topográfico", index=False)
     print(f"-> Reporte Excel generado como: '{ruta_excel}'")
+    
+    # NUEVO: Devolvemos las rutas y los datos para que Streamlit los pueda usar
+    return ruta_cad, ruta_excel, resumen_excel
 
 if __name__ == "__main__":
-    print("\n--- GENERADOR DE DETALLES Y METRADOS (INTEGRACIÓN ERP) ---")
-    nombre_archivo = input("Escribe el nombre de tu archivo (ej: mi_plano.dxf) y presiona ENTER:\n> ").strip()
-    if nombre_archivo:
-        if not nombre_archivo.lower().endswith('.dxf'): nombre_archivo += ".dxf"
-        if os.path.exists(nombre_archivo): analizar_plano(nombre_archivo)
-        else: print(f"\n[ERROR] No encontré el archivo '{nombre_archivo}'.")
-    else:
-        crear_dxf_prueba()
-        analizar_plano(ARCHIVO_DEFECTO)
+    # --- INTERFAZ WEB STREAMLIT ---
+    st.set_page_config(page_title="Metrados de Riego", layout="wide", page_icon="💧")
+    
+    st.title("💧 Generador de Detalles y Metrados ERP")
+    st.markdown("""
+    Sube tu plano DXF para analizar la topología de la red, generar automáticamente 
+    los esquemas de nodos en CAD y calcular la lista de compras con códigos oficiales.
+    """)
+
+    # 1. Widget para subir el archivo (reemplaza al antiguo 'input()')
+    archivo_subido = st.file_uploader("Sube tu archivo CAD (.dxf)", type=["dxf"])
+
+    if archivo_subido is not None:
+        # Guardar el archivo temporalmente en el servidor para que ezdxf lo pueda leer
+        ruta_temp = "temp_" + archivo_subido.name
+        with open(ruta_temp, "wb") as f:
+            f.write(archivo_subido.getbuffer())
+            
+        # 2. Botón de ejecución
+        if st.button("Procesar Plano de Riego", type="primary"):
+            
+            # Muestra un spinner o "ruedita de carga" mientras hace el trabajo pesado
+            with st.spinner("Analizando la red, calculando flujos y dibujando esquemas topográficos..."):
+                try:
+                    # Ejecutamos el motor que construimos
+                    ruta_cad, ruta_excel, resumen = analizar_plano(ruta_temp)
+                    
+                    st.success("¡Análisis completado con éxito!")
+                    
+                    # 3. Mostramos la tabla directamente en la página web
+                    st.subheader("📋 Resumen de Requerimientos (BOM)")
+                    if resumen:
+                        df_resumen = pd.DataFrame(resumen)
+                        st.dataframe(df_resumen)
+                    else:
+                        st.warning("No se encontraron accesorios comerciales en el plano.")
+                    
+                    # 4. Botones para descargar los archivos generados
+                    st.markdown("### Descarga de Entregables")
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        with open(ruta_excel, "rb") as f:
+                            st.download_button(
+                                label="📥 Descargar Reporte Excel",
+                                data=f,
+                                file_name=f"Metrados_{archivo_subido.name.replace('.dxf', '')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True
+                            )
+                    with col2:
+                        with open(ruta_cad, "rb") as f:
+                            st.download_button(
+                                label="📥 Descargar Plano CAD con Esquemas",
+                                data=f,
+                                file_name=f"Esquemas_{archivo_subido.name}",
+                                mime="application/dxf",
+                                use_container_width=True
+                            )
+                except Exception as e:
+                    st.error(f"Ocurrió un error inesperado al procesar el dibujo: {e}")

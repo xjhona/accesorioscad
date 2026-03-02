@@ -37,7 +37,6 @@ REDUCCIONES_DIRECTAS = [
 
 # --- BASE DE DATOS DE LA EMPRESA (CATÁLOGO MAESTRO) ---
 BASE_DATOS_EMPRESA = {
-    # NUEVOS CÓDIGOS OFICIALES INCORPORADOS
     "Curva 30° de 140mm": {"codigo": "101031657", "desc_oficial": "CURVA PVC 140 UF X 30°"},
     "Curva 30° de 200mm": {"codigo": "101077136", "desc_oficial": "CURVA PVC 200 UF X 30°"},
     "Curva 30° de 90mm": {"codigo": "S.C.", "desc_oficial": "CURVA PVC 90 SP X 30°"},
@@ -110,10 +109,16 @@ def crear_dxf_prueba():
     msp.add_line((0, 0), (0, 10), dxfattribs={'color': 200}) # 200mm
     msp.add_line((0, 10), (10, 10), dxfattribs={'color': 1}) # 140mm
     
-    # Tee Compleja (Flujo 200mm, deriva a 140mm y 90mm como en tu imagen)
-    msp.add_line((30, -10), (30, 0), dxfattribs={'color': 200}) # Matriz 200mm (Llega de abajo)
-    msp.add_line((30, 0), (45, 0), dxfattribs={'color': 1})    # Deriva a 140mm (Derecha)
-    msp.add_line((30, 0), (15, 0), dxfattribs={'color': 3})    # Deriva a 90mm (Izquierda)
+    # Tee Compleja (Flujo 200mm, deriva a 140mm y 90mm Larga)
+    msp.add_line((30, -10), (30, 0), dxfattribs={'color': 200}) # Matriz 200mm
+    msp.add_line((30, 0), (45, 0), dxfattribs={'color': 1})     # Deriva a 140mm (Larga > 6m)
+    msp.add_line((30, 0), (15, 0), dxfattribs={'color': 3})     # Deriva a 90mm (Larga > 6m)
+
+    # NUEVO CASO EXCEPCIONAL: Válvula Hidráulica Directa
+    # Matriz de 160mm con una derivación corta de 75mm (L = 4m)
+    msp.add_line((100, 0), (100, 10), dxfattribs={'color': 2})  # Viene 160mm
+    msp.add_line((100, 10), (100, 20), dxfattribs={'color': 2}) # Sigue 160mm
+    msp.add_line((100, 10), (104, 10), dxfattribs={'color': 6}) # Ramal corto 75mm (L = 4m)
 
     # Cruz 
     msp.add_line((70, 0), (80, 0), dxfattribs={'color': 4})
@@ -163,7 +168,6 @@ def es_final_principal(coord_inicial, grafo):
             v1, v2 = obtener_clave_coord(*conexiones[0]['vecino']), obtener_clave_coord(*conexiones[1]['vecino'])
             prev_coord, curr_coord = curr_coord, (v1 if v2 == prev_coord else v2)
         elif grado >= 3:
-            # Determinamos quién es la línea principal (el diámetro mayor)
             d_max = max([extraer_num(MAPA_DIAMETROS[c['color']]) for c in conexiones])
             d_prev = extraer_num(MAPA_DIAMETROS[[c for c in conexiones if obtener_clave_coord(*c['vecino']) == prev_coord][0]['color']])
             return d_prev == d_max
@@ -200,13 +204,16 @@ def dibujar_esquema_nodo(msp, cx, cy, id_nodo, conexiones_nodo, accesorios_lista
         diam_num = extraer_num(diam_texto)
         msp.add_text(diam_texto, dxfattribs={'insert': (fin_x + 1.5*math.cos(ang_rad), fin_y + 1.5*math.sin(ang_rad)), 'height': 1.8, 'layer': capa_textos, 'color': 7})
 
+        # Dibujar marca roja de Reducción en el esquema
         if hay_reduccion and diam_num < diam_max_nodo:
-            mitad_x, mitad_y = centro_esq_x + (R_LINEA/2) * math.cos(ang_rad), centro_esq_y + (R_LINEA/2) * math.sin(ang_rad)
-            ang_perp = ang_rad + math.pi/2
-            p_red1 = (mitad_x + 2.0*math.cos(ang_perp), mitad_y + 2.0*math.sin(ang_perp))
-            p_red2 = (mitad_x - 2.0*math.cos(ang_perp), mitad_y - 2.0*math.sin(ang_perp))
-            msp.add_line(p_red1, p_red2, dxfattribs={'layer': capa_lineas, 'color': 1}) 
-            msp.add_text(" RED", dxfattribs={'insert': (p_red1[0], p_red1[1]+1), 'height': 1.2, 'color': 1})
+            # Si se usó una Tee especial, no requiere el símbolo de reducción anexo en ese ramal
+            if f"x{diam_num}x" not in " ".join(accesorios_lista):
+                mitad_x, mitad_y = centro_esq_x + (R_LINEA/2) * math.cos(ang_rad), centro_esq_y + (R_LINEA/2) * math.sin(ang_rad)
+                ang_perp = ang_rad + math.pi/2
+                p_red1 = (mitad_x + 2.0*math.cos(ang_perp), mitad_y + 2.0*math.sin(ang_perp))
+                p_red2 = (mitad_x - 2.0*math.cos(ang_perp), mitad_y - 2.0*math.sin(ang_perp))
+                msp.add_line(p_red1, p_red2, dxfattribs={'layer': capa_lineas, 'color': 1}) 
+                msp.add_text(" RED", dxfattribs={'insert': (p_red1[0], p_red1[1]+1), 'height': 1.2, 'color': 1})
 
     es_curva = any("Curva" in a for a in accesorios_lista)
     if es_curva and len(angulos_absolutos) == 2:
@@ -278,33 +285,88 @@ def analizar_plano(ruta_archivo):
                 accesorios_en_este_nodo.extend(calcular_reducciones_cascada(d_max, min(d1, d2)))
 
         elif grado == 3:
-            d_otros = diametros_num.copy()
-            d_otros.remove(d_max)
+            # 1. Identificar geométricamente la línea principal para aislar el ramal
+            max_angulo = -1
+            idx_m1, idx_m2 = -1, -1
+            for i in range(3):
+                for j in range(i+1, 3):
+                    ang = calcular_angulo_entre_lineas(conexiones[i]['centro'], conexiones[i]['vecino'], conexiones[j]['vecino'])
+                    if ang > max_angulo: max_angulo, idx_m1, idx_m2 = ang, i, j
             
-            tee_encontrada = False
-            for d_branch in sorted(d_otros):
-                nombre_tee = f"Tee Reducida {d_max}x{d_branch}x{d_max}mm"
-                if nombre_tee in BASE_DATOS_EMPRESA:
-                    accesorios_en_este_nodo.append(nombre_tee)
-                    d_otros.remove(d_branch)
-                    tee_encontrada = True
-                    break
+            indices = {0, 1, 2}
+            indices.remove(idx_m1)
+            indices.remove(idx_m2)
+            idx_r = list(indices)[0] # Índice del ramal derivado
             
-            if not tee_encontrada: accesorios_en_este_nodo.append(f"Tee {d_max}mm")
-            for d_target in d_otros: accesorios_en_este_nodo.extend(calcular_reducciones_cascada(d_max, d_target))
+            conn_m1, conn_m2, conn_r = conexiones[idx_m1], conexiones[idx_m2], conexiones[idx_r]
+            
+            d_m1 = extraer_num(MAPA_DIAMETROS[conn_m1['color']])
+            d_m2 = extraer_num(MAPA_DIAMETROS[conn_m2['color']])
+            d_r = extraer_num(MAPA_DIAMETROS[conn_r['color']])
+            
+            d_main_max = max(d_m1, d_m2)
+            d_main_min = min(d_m1, d_m2)
+            
+            # --- EXCEPCIÓN: VÁLVULAS HIDRÁULICAS CORTAS ---
+            long_branch = math.dist(conn_r['centro'], conn_r['vecino'])
+            es_ramal_valvula = (d_r in [75, 90] and long_branch < 6.0)
+            
+            nombre_tee = f"Tee Reducida {d_main_max}x{d_r}x{d_main_max}mm" if d_main_max != d_r else f"Tee {d_main_max}mm"
+            
+            # Verificamos si la pieza existe en el catálogo O si es una excepción de válvula corta
+            if nombre_tee in BASE_DATOS_EMPRESA or es_ramal_valvula:
+                accesorios_en_este_nodo.append(nombre_tee)
+            else:
+                accesorios_en_este_nodo.append(f"Tee {d_main_max}mm")
+                accesorios_en_este_nodo.extend(calcular_reducciones_cascada(d_main_max, d_r))
+                
+            # Si la tubería principal sufre reducción, se añade post-tee
+            if d_main_max != d_main_min:
+                accesorios_en_este_nodo.extend(calcular_reducciones_cascada(d_main_max, d_main_min))
 
         elif grado == 4:
-            d_otros = diametros_num.copy()
-            d_otros.remove(d_max)
-            # Construimos la cruz comercial como dos Tees consecutivas de D_max
-            for i in range(2):
-                d_branch = d_otros[i]
-                nombre_tee = f"Tee Reducida {d_max}x{d_branch}x{d_max}mm"
-                if nombre_tee in BASE_DATOS_EMPRESA: accesorios_en_este_nodo.append(nombre_tee)
+            pares = []
+            for i in range(4):
+                for j in range(i+1, 4):
+                    ang = calcular_angulo_entre_lineas(conexiones[i]['centro'], conexiones[i]['vecino'], conexiones[j]['vecino'])
+                    if ang > 165:
+                        d1, d2 = extraer_num(MAPA_DIAMETROS[conexiones[i]['color']]), extraer_num(MAPA_DIAMETROS[conexiones[j]['color']])
+                        pares.append((ang, d1+d2, i, j))
+            
+            if pares:
+                pares.sort(key=lambda x: (x[1], x[0]), reverse=True)
+                idx_m1, idx_m2 = pares[0][2], pares[0][3]
+            else:
+                d_list = [(extraer_num(MAPA_DIAMETROS[c['color']]), idx) for idx, c in enumerate(conexiones)]
+                d_list.sort(reverse=True)
+                idx_m1, idx_m2 = d_list[0][1], d_list[1][1]
+            
+            indices_ramales = {0, 1, 2, 3}
+            indices_ramales.remove(idx_m1); indices_ramales.remove(idx_m2)
+            
+            d_m1 = extraer_num(MAPA_DIAMETROS[conexiones[idx_m1]['color']])
+            d_m2 = extraer_num(MAPA_DIAMETROS[conexiones[idx_m2]['color']])
+            d_main_max = max(d_m1, d_m2)
+            d_main_min = min(d_m1, d_m2)
+                
+            for idx_r in indices_ramales:
+                conn_r = conexiones[idx_r]
+                d_r = extraer_num(MAPA_DIAMETROS[conn_r['color']])
+                
+                # --- EXCEPCIÓN: VÁLVULAS HIDRÁULICAS CORTAS EN CRUZ ---
+                long_branch = math.dist(conn_r['centro'], conn_r['vecino'])
+                es_ramal_valvula = (d_r in [75, 90] and long_branch < 6.0)
+                
+                nombre_tee = f"Tee Reducida {d_main_max}x{d_r}x{d_main_max}mm" if d_main_max != d_r else f"Tee {d_main_max}mm"
+                
+                if nombre_tee in BASE_DATOS_EMPRESA or es_ramal_valvula:
+                    accesorios_en_este_nodo.append(nombre_tee)
                 else: 
-                    accesorios_en_este_nodo.append(f"Tee {d_max}mm")
-                    accesorios_en_este_nodo.extend(calcular_reducciones_cascada(d_max, d_branch))
-            accesorios_en_este_nodo.extend(calcular_reducciones_cascada(d_max, d_otros[2]))
+                    accesorios_en_este_nodo.append(f"Tee {d_main_max}mm")
+                    accesorios_en_este_nodo.extend(calcular_reducciones_cascada(d_main_max, d_r))
+                    
+            if d_main_max != d_main_min:
+                accesorios_en_este_nodo.extend(calcular_reducciones_cascada(d_main_max, d_main_min))
 
         if accesorios_en_este_nodo:
             resultados_nodos[coord_key] = accesorios_en_este_nodo
@@ -377,7 +439,6 @@ def analizar_plano(ruta_archivo):
         pd.DataFrame(detalles_nodos_excel).to_excel(writer, sheet_name="Replanteo Topográfico", index=False)
     print(f"-> Reporte Excel generado como: '{ruta_excel}'")
     
-    # NUEVO: Devolvemos las rutas y los datos para que Streamlit los pueda usar
     return ruta_cad, ruta_excel, resumen_excel
 
 if __name__ == "__main__":
@@ -390,27 +451,19 @@ if __name__ == "__main__":
     los esquemas de nodos en CAD y calcular la lista de compras con códigos oficiales.
     """)
 
-    # 1. Widget para subir el archivo (reemplaza al antiguo 'input()')
     archivo_subido = st.file_uploader("Sube tu archivo CAD (.dxf)", type=["dxf"])
 
     if archivo_subido is not None:
-        # Guardar el archivo temporalmente en el servidor para que ezdxf lo pueda leer
         ruta_temp = "temp_" + archivo_subido.name
         with open(ruta_temp, "wb") as f:
             f.write(archivo_subido.getbuffer())
             
-        # 2. Botón de ejecución
         if st.button("Procesar Plano de Riego", type="primary"):
-            
-            # Muestra un spinner o "ruedita de carga" mientras hace el trabajo pesado
             with st.spinner("Analizando la red, calculando flujos y dibujando esquemas topográficos..."):
                 try:
-                    # Ejecutamos el motor que construimos
                     ruta_cad, ruta_excel, resumen = analizar_plano(ruta_temp)
-                    
                     st.success("¡Análisis completado con éxito!")
                     
-                    # 3. Mostramos la tabla directamente en la página web
                     st.subheader("📋 Resumen de Requerimientos (BOM)")
                     if resumen:
                         df_resumen = pd.DataFrame(resumen)
@@ -418,7 +471,6 @@ if __name__ == "__main__":
                     else:
                         st.warning("No se encontraron accesorios comerciales en el plano.")
                     
-                    # 4. Botones para descargar los archivos generados
                     st.markdown("### Descarga de Entregables")
                     col1, col2 = st.columns(2)
                     
@@ -426,19 +478,15 @@ if __name__ == "__main__":
                         with open(ruta_excel, "rb") as f:
                             st.download_button(
                                 label="📥 Descargar Reporte Excel",
-                                data=f,
-                                file_name=f"Metrados_{archivo_subido.name.replace('.dxf', '')}.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                use_container_width=True
+                                data=f, file_name=f"Metrados_{archivo_subido.name.replace('.dxf', '')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True
                             )
                     with col2:
                         with open(ruta_cad, "rb") as f:
                             st.download_button(
                                 label="📥 Descargar Plano CAD con Esquemas",
-                                data=f,
-                                file_name=f"Esquemas_{archivo_subido.name}",
-                                mime="application/dxf",
-                                use_container_width=True
+                                data=f, file_name=f"Esquemas_{archivo_subido.name}",
+                                mime="application/dxf", use_container_width=True
                             )
                 except Exception as e:
                     st.error(f"Ocurrió un error inesperado al procesar el dibujo: {e}")

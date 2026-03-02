@@ -35,41 +35,14 @@ REDUCCIONES_DIRECTAS = [
     (75, 63)
 ]
 
-# --- BASE DE DATOS DE LA EMPRESA (CATÁLOGO MAESTRO) ---
-BASE_DATOS_EMPRESA = {
-    "Curva 30° de 140mm": {"codigo": "101031657", "desc_oficial": "CURVA PVC 140 UF X 30°"},
-    "Curva 30° de 200mm": {"codigo": "101077136", "desc_oficial": "CURVA PVC 200 UF X 30°"},
-    "Curva 30° de 90mm": {"codigo": "S.C.", "desc_oficial": "CURVA PVC 90 SP X 30°"},
-    "Curva 45° de 90mm": {"codigo": "101076226", "desc_oficial": "CURVA PVC 90 SP X 45°"},
-    "Curva 60° de 140mm": {"codigo": "S.C.", "desc_oficial": "CURVA PVC 140 UF X 60°"},
-    "Curva 60° de 200mm": {"codigo": "101077145", "desc_oficial": "CURVA PVC 200 UF X 60°"},
-    "Curva 90° de 140mm": {"codigo": "101091517", "desc_oficial": "CURVA PVC 140 UF X 90°"},
-    "Curva 90° de 200mm": {"codigo": "101039856", "desc_oficial": "CURVA PVC 200 UF X 90°"},
-    "Curva 90° de 250mm": {"codigo": "101076415", "desc_oficial": "CURVA PVC 250 UF X 90°"},
-    "Curva 90° de 90mm": {"codigo": "101047316", "desc_oficial": "CURVA PVC 90 SP X 90°"},
-    
-    "Reducción 140mm - 90mm": {"codigo": "101076459", "desc_oficial": "REDUCCION PVC SP 140MM X 90MM"},
-    "Reducción 200mm - 140mm": {"codigo": "101076509", "desc_oficial": "REDUCCION PVC UF 200MM X 140MM"},
-    
-    "Tee 200mm": {"codigo": "101076635", "desc_oficial": "TEE PVC UF 200 MM"},
-    "Tee 250mm": {"codigo": "101076880", "desc_oficial": "TEE PVC UF 250 MM"},
-    "Tee 90mm": {"codigo": "101004364", "desc_oficial": "TEE PVC SP 90 MM"},
-
-    # Mantenemos algunos de prueba anteriores para evitar errores en el dibujo de muestra
-    "Curva 90° de 110mm": {"codigo": "ACC-CUR-001", "desc_oficial": "CURVA PVC 90° 110MM UF"},
-    "Tee Reducida 110x75x110mm": {"codigo": "ACC-TEE-045", "desc_oficial": "TEE REDUCIDA PVC INYECTADA 110X75MM"},
-    "Tee Reducida 90x75x90mm": {"codigo": "ACC-TEE-042", "desc_oficial": "TEE REDUCIDA PVC INYECTADA 90X75MM"},
-    "Tee 140mm": {"codigo": "ACC-TEE-140", "desc_oficial": "TEE RECTA PVC 140MM"},
-    "Tee 110mm": {"codigo": "ACC-TEE-110", "desc_oficial": "TEE RECTA PVC 110MM"},
-    "Reducción 110mm - 90mm": {"codigo": "ACC-RED-005", "desc_oficial": "REDUCCION CONICA PVC 110 A 90MM"},
-    "Reducción 90mm - 75mm": {"codigo": "ACC-RED-008", "desc_oficial": "REDUCCION CONICA PVC 90 A 75MM"},
-    "Purga/Desfogue 110mm": {"codigo": "VAL-PUR-110", "desc_oficial": "CONJUNTO VALVULA DE PURGA 110MM COMPLETA"}
-}
-
-def obtener_datos_empresa(accesorio_str):
-    if accesorio_str in BASE_DATOS_EMPRESA:
-        return BASE_DATOS_EMPRESA[accesorio_str]
-    return {"codigo": "SIN-CODIGO", "desc_oficial": accesorio_str.upper() + " (A COTIZAR)"}
+def obtener_datos_empresa(accesorio_str, catalogo_empresa=None):
+    """Busca el accesorio en el catálogo dinámico de la empresa."""
+    if catalogo_empresa is None:
+        catalogo_empresa = {}
+        
+    if accesorio_str in catalogo_empresa:
+        return catalogo_empresa[accesorio_str]
+    return {"codigo": "S.C.", "desc_oficial": accesorio_str.upper()}
 
 def calcular_reducciones_cascada(d_max, d_min):
     """Calcula el camino comercial más corto entre dos diámetros."""
@@ -158,23 +131,44 @@ def clasificar_curva_comercial(angulo_deflexion):
 
 def es_final_principal(coord_inicial, grafo):
     curr_coord, prev_coord = coord_inicial, None
+    longitud_ramal = 0.0
+    diam_ramal = 0
+    
     for _ in range(1000):
         conexiones = grafo[curr_coord]
         grado = len(conexiones)
+        
         if grado == 1:
-            if prev_coord is not None: return True
-            prev_coord, curr_coord = curr_coord, obtener_clave_coord(*conexiones[0]['vecino'])
+            if prev_coord is not None: return True # Es una línea recta sin derivaciones
+            conn = conexiones[0]
+            diam_ramal = extraer_num(MAPA_DIAMETROS[conn['color']])
+            longitud_ramal += math.dist(conn['centro'], conn['vecino'])
+            prev_coord, curr_coord = curr_coord, obtener_clave_coord(*conn['vecino'])
+            
         elif grado == 2:
-            v1, v2 = obtener_clave_coord(*conexiones[0]['vecino']), obtener_clave_coord(*conexiones[1]['vecino'])
-            prev_coord, curr_coord = curr_coord, (v1 if v2 == prev_coord else v2)
+            c1, c2 = conexiones[0], conexiones[1]
+            v1, v2 = obtener_clave_coord(*c1['vecino']), obtener_clave_coord(*c2['vecino'])
+            if v1 == prev_coord:
+                c_next, next_coord = c2, v2
+            else:
+                c_next, next_coord = c1, v1
+            
+            longitud_ramal += math.dist(c_next['centro'], c_next['vecino'])
+            prev_coord, curr_coord = curr_coord, next_coord
+            
         elif grado >= 3:
+            # MAGIA: Validación Espacial para Válvulas
+            if diam_ramal in [75, 90] and longitud_ramal < 6.0:
+                return False # Es un ramal corto de válvula, se ignora como "Final Principal"
+                
             d_max = max([extraer_num(MAPA_DIAMETROS[c['color']]) for c in conexiones])
             d_prev = extraer_num(MAPA_DIAMETROS[[c for c in conexiones if obtener_clave_coord(*c['vecino']) == prev_coord][0]['color']])
             return d_prev == d_max
+            
     return False
 
 # --- PARTE 3: RUTINA DE DIBUJO DE ESQUEMAS ---
-def dibujar_esquema_nodo(msp, cx, cy, id_nodo, conexiones_nodo, accesorios_lista, deflexion_real):
+def dibujar_esquema_nodo(msp, cx, cy, id_nodo, conexiones_nodo, accesorios_lista, deflexion_real, catalogo_empresa=None):
     ANCHO_CAJA, ALTO_CAJA, R_LINEA = 70, 75, 15 
     capa_lineas, capa_textos = '_ESQUEMAS_LINEAS', '_ESQUEMAS_TEXTOS'
 
@@ -206,7 +200,6 @@ def dibujar_esquema_nodo(msp, cx, cy, id_nodo, conexiones_nodo, accesorios_lista
 
         # Dibujar marca roja de Reducción en el esquema
         if hay_reduccion and diam_num < diam_max_nodo:
-            # Si se usó una Tee especial, no requiere el símbolo de reducción anexo en ese ramal
             if f"x{diam_num}x" not in " ".join(accesorios_lista):
                 mitad_x, mitad_y = centro_esq_x + (R_LINEA/2) * math.cos(ang_rad), centro_esq_y + (R_LINEA/2) * math.sin(ang_rad)
                 ang_perp = ang_rad + math.pi/2
@@ -229,13 +222,13 @@ def dibujar_esquema_nodo(msp, cx, cy, id_nodo, conexiones_nodo, accesorios_lista
     msp.add_text("Requerimiento:", dxfattribs={'insert': (cx - ANCHO_CAJA/2 + 2, y_texto), 'height': 2.0, 'color': 7})
     y_texto -= 3.5
     for item in accesorios_lista:
-        datos_empresa = obtener_datos_empresa(item)
+        datos_empresa = obtener_datos_empresa(item, catalogo_empresa)
         msp.add_text(f"- [{datos_empresa['codigo']}]", dxfattribs={'insert': (cx - ANCHO_CAJA/2 + 2, y_texto), 'height': 1.4, 'layer': capa_textos, 'color': 3})
         msp.add_text(f"  {item}", dxfattribs={'insert': (cx - ANCHO_CAJA/2 + 2, y_texto - 1.8), 'height': 1.6, 'layer': capa_textos, 'color': 7})
         y_texto -= 4.0
 
 # --- PARTE 4: ANÁLISIS DEL PLANO Y GENERACIÓN DE REPORTE ---
-def analizar_plano(ruta_archivo):
+def analizar_plano(ruta_archivo, catalogo_empresa=None):
     print(f"\n>>> PROCESANDO ARCHIVO: {ruta_archivo}")
     try:
         doc = ezdxf.readfile(ruta_archivo)
@@ -285,7 +278,6 @@ def analizar_plano(ruta_archivo):
                 accesorios_en_este_nodo.extend(calcular_reducciones_cascada(d_max, min(d1, d2)))
 
         elif grado == 3:
-            # 1. Identificar geométricamente la línea principal para aislar el ramal
             max_angulo = -1
             idx_m1, idx_m2 = -1, -1
             for i in range(3):
@@ -296,7 +288,7 @@ def analizar_plano(ruta_archivo):
             indices = {0, 1, 2}
             indices.remove(idx_m1)
             indices.remove(idx_m2)
-            idx_r = list(indices)[0] # Índice del ramal derivado
+            idx_r = list(indices)[0] 
             
             conn_m1, conn_m2, conn_r = conexiones[idx_m1], conexiones[idx_m2], conexiones[idx_r]
             
@@ -313,14 +305,12 @@ def analizar_plano(ruta_archivo):
             
             nombre_tee = f"Tee Reducida {d_main_max}x{d_r}x{d_main_max}mm" if d_main_max != d_r else f"Tee {d_main_max}mm"
             
-            # Verificamos si la pieza existe en el catálogo O si es una excepción de válvula corta
             if nombre_tee in BASE_DATOS_EMPRESA or es_ramal_valvula:
                 accesorios_en_este_nodo.append(nombre_tee)
             else:
                 accesorios_en_este_nodo.append(f"Tee {d_main_max}mm")
                 accesorios_en_este_nodo.extend(calcular_reducciones_cascada(d_main_max, d_r))
                 
-            # Si la tubería principal sufre reducción, se añade post-tee
             if d_main_max != d_main_min:
                 accesorios_en_este_nodo.extend(calcular_reducciones_cascada(d_main_max, d_main_min))
 
@@ -404,7 +394,7 @@ def analizar_plano(ruta_archivo):
         es_purga = False
         for acc in accesorios:
             conteo_accesorios[acc] += 1
-            datos = obtener_datos_empresa(acc)
+            datos = obtener_datos_empresa(acc, catalogo_empresa)
             detalles_nodos_excel.append({'ID Nodo': nombre_nodo, 'Coord X': round(x, 2), 'Coord Y': round(y, 2), 'Cód. Empresa': datos['codigo'], 'Desc. Comercial': datos['desc_oficial'], 'Accesorio Geométrico': acc})
             if "Purga/Desfogue" in acc:
                 es_purga = True
@@ -415,7 +405,7 @@ def analizar_plano(ruta_archivo):
 
         if not es_purga:
             cx_esq, cy_esq = start_esq_x + (col_actual * 80), start_esq_y - (row_actual * 80)
-            dibujar_esquema_nodo(msp, cx_esq, cy_esq, nombre_nodo, grafo[coord_key], accesorios, deflexion)
+            dibujar_esquema_nodo(msp, cx_esq, cy_esq, nombre_nodo, grafo[coord_key], accesorios, deflexion, catalogo_empresa)
             col_actual += 1
             if col_actual >= 4: col_actual, row_actual = 0, row_actual + 1
 
@@ -424,7 +414,7 @@ def analizar_plano(ruta_archivo):
     print("\n" + "="*40 + "\nRESUMEN DE MATERIALES (COMERCIAL)\n" + "="*40)
     resumen_excel = []
     for acc, cant in sorted(conteo_accesorios.items()):
-        datos = obtener_datos_empresa(acc)
+        datos = obtener_datos_empresa(acc, catalogo_empresa)
         print(f"[{datos['codigo']}] {acc}: {cant} und.")
         resumen_excel.append({'Código ERP / SKU': datos['codigo'], 'Descripción Comercial (Compras)': datos['desc_oficial'], 'Accesorio Geométrico': acc, 'Cantidad Requerida': cant})
         
@@ -451,17 +441,48 @@ if __name__ == "__main__":
     los esquemas de nodos en CAD y calcular la lista de compras con códigos oficiales.
     """)
 
-    archivo_subido = st.file_uploader("Sube tu archivo CAD (.dxf)", type=["dxf"])
+    # Columnas para subir múltiples archivos
+    col_up1, col_up2 = st.columns(2)
+    with col_up1:
+        archivo_subido = st.file_uploader("1️⃣ Sube tu archivo CAD (.dxf)", type=["dxf"])
+    with col_up2:
+        archivo_catalogo = st.file_uploader("2️⃣ Sube tu Catálogo Maestro (.xlsx) - Opcional", type=["xlsx"])
+        st.caption("Debe tener columnas sugeridas: 'Accesorio Geométrico', 'Código', 'Descripción'")
 
     if archivo_subido is not None:
         ruta_temp = "temp_" + archivo_subido.name
         with open(ruta_temp, "wb") as f:
             f.write(archivo_subido.getbuffer())
             
+        # Procesamiento dinámico del Catálogo Excel
+        catalogo_dict = {}
+        if archivo_catalogo is not None:
+            try:
+                df_cat = pd.read_excel(archivo_catalogo)
+                
+                # Búsqueda inteligente de las columnas sin importar mayúsculas o nombres exactos
+                cols_lower = [str(c).lower() for c in df_cat.columns]
+                col_acc = df_cat.columns[next(i for i, c in enumerate(cols_lower) if 'accesorio' in c)]
+                col_cod = df_cat.columns[next(i for i, c in enumerate(cols_lower) if 'cód' in c or 'cod' in c or 'erp' in c or 'sku' in c)]
+                col_desc = df_cat.columns[next(i for i, c in enumerate(cols_lower) if 'desc' in c)]
+                
+                for _, row in df_cat.iterrows():
+                    acc_val = str(row[col_acc]).strip()
+                    catalogo_dict[acc_val] = {
+                        "codigo": str(row[col_cod]).strip() if pd.notna(row[col_cod]) else "S.C.",
+                        "desc_oficial": str(row[col_desc]).strip() if pd.notna(row[col_desc]) else acc_val.upper()
+                    }
+                st.success(f"✅ Catálogo cargado: {len(catalogo_dict)} artículos registrados listos para mapear.")
+            except StopIteration:
+                st.error("⚠️ El Excel debe tener columnas que contengan las palabras: 'Accesorio', 'Codigo' y 'Descripcion'.")
+            except Exception as e:
+                st.error(f"⚠️ Error leyendo el catálogo: {e}")
+                
         if st.button("Procesar Plano de Riego", type="primary"):
             with st.spinner("Analizando la red, calculando flujos y dibujando esquemas topográficos..."):
                 try:
-                    ruta_cad, ruta_excel, resumen = analizar_plano(ruta_temp)
+                    # Ahora pasamos el catálogo al motor principal
+                    ruta_cad, ruta_excel, resumen = analizar_plano(ruta_temp, catalogo_dict)
                     st.success("¡Análisis completado con éxito!")
                     
                     st.subheader("📋 Resumen de Requerimientos (BOM)")

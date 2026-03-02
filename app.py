@@ -203,10 +203,17 @@ def dibujar_esquema_nodo(msp, cx, cy, id_nodo, conexiones_nodo, accesorios_lista
             if f"x{diam_num}x" not in " ".join(accesorios_lista):
                 mitad_x, mitad_y = centro_esq_x + (R_LINEA/2) * math.cos(ang_rad), centro_esq_y + (R_LINEA/2) * math.sin(ang_rad)
                 ang_perp = ang_rad + math.pi/2
-                p_red1 = (mitad_x + 2.0*math.cos(ang_perp), mitad_y + 2.0*math.sin(ang_perp))
-                p_red2 = (mitad_x - 2.0*math.cos(ang_perp), mitad_y - 2.0*math.sin(ang_perp))
+                
+                # Alargamos un poco más la marca roja para que sea más visible
+                p_red1 = (mitad_x + 2.5*math.cos(ang_perp), mitad_y + 2.5*math.sin(ang_perp))
+                p_red2 = (mitad_x - 2.5*math.cos(ang_perp), mitad_y - 2.5*math.sin(ang_perp))
                 msp.add_line(p_red1, p_red2, dxfattribs={'layer': capa_lineas, 'color': 1}) 
-                msp.add_text(" RED", dxfattribs={'insert': (p_red1[0], p_red1[1]+1), 'height': 1.2, 'color': 1})
+                
+                # CORRECCIÓN VISUAL: Usamos el ángulo perpendicular para empujar el texto hacia afuera siempre
+                txt_x = mitad_x + 3.0 * math.cos(ang_perp)
+                # Restamos un poquito en Y solo para centrar el texto respecto a la marca
+                txt_y = mitad_y + 3.0 * math.sin(ang_perp) - 0.5
+                msp.add_text("RED", dxfattribs={'insert': (txt_x, txt_y), 'height': 1.2, 'layer': capa_textos, 'color': 1})
 
     es_curva = any("Curva" in a for a in accesorios_lista)
     if es_curva and len(angulos_absolutos) == 2:
@@ -229,6 +236,10 @@ def dibujar_esquema_nodo(msp, cx, cy, id_nodo, conexiones_nodo, accesorios_lista
 
 # --- PARTE 4: ANÁLISIS DEL PLANO Y GENERACIÓN DE REPORTE ---
 def analizar_plano(ruta_archivo, catalogo_empresa=None):
+    # CORRECCIÓN: Si no se subió catálogo, creamos uno vacío para evitar errores
+    if catalogo_empresa is None:
+        catalogo_empresa = {}
+
     print(f"\n>>> PROCESANDO ARCHIVO: {ruta_archivo}")
     try:
         doc = ezdxf.readfile(ruta_archivo)
@@ -305,7 +316,8 @@ def analizar_plano(ruta_archivo, catalogo_empresa=None):
             
             nombre_tee = f"Tee Reducida {d_main_max}x{d_r}x{d_main_max}mm" if d_main_max != d_r else f"Tee {d_main_max}mm"
             
-            if nombre_tee in BASE_DATOS_EMPRESA or es_ramal_valvula:
+            # CORRECCIÓN: Ahora busca en "catalogo_empresa" en lugar de "BASE_DATOS_EMPRESA"
+            if nombre_tee in catalogo_empresa or es_ramal_valvula:
                 accesorios_en_este_nodo.append(nombre_tee)
             else:
                 accesorios_en_este_nodo.append(f"Tee {d_main_max}mm")
@@ -349,7 +361,8 @@ def analizar_plano(ruta_archivo, catalogo_empresa=None):
                 
                 nombre_tee = f"Tee Reducida {d_main_max}x{d_r}x{d_main_max}mm" if d_main_max != d_r else f"Tee {d_main_max}mm"
                 
-                if nombre_tee in BASE_DATOS_EMPRESA or es_ramal_valvula:
+                # CORRECCIÓN: Ahora busca en "catalogo_empresa" en lugar de "BASE_DATOS_EMPRESA"
+                if nombre_tee in catalogo_empresa or es_ramal_valvula:
                     accesorios_en_este_nodo.append(nombre_tee)
                 else: 
                     accesorios_en_este_nodo.append(f"Tee {d_main_max}mm")

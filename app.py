@@ -1,23 +1,12 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import shutil
-import os
-import base64
+import streamlit as st
 import ezdxf
 import math
 import re
 import pandas as pd
+import os
+import tempfile
+import io
 from collections import defaultdict
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # --- CONFIGURACIÓN GENERAL ---
 TAMANO_MARCADOR = 4.0 
@@ -347,114 +336,138 @@ def analizar_plano(ruta_archivo, catalogo_empresa=None):
         datos = obtener_datos_empresa(acc, catalogo_empresa)
         resumen_excel.append({'Código ERP': datos['codigo'], 'Descripción Comercial': datos['desc_oficial'], 'Accesorio Geométrico': acc, 'Cantidad': cant})
         
-    base_nombre = f"/tmp/{os.path.basename(ruta_archivo).replace('.dxf', '')}"
-    ruta_cad = f"{base_nombre}_NUMERADO.dxf"
-    doc.saveas(ruta_cad)
+    # Guardamos en un buffer en memoria (ideal para Streamlit)
+    doc_io = io.StringIO()
+    doc.write(doc_io)
+    cad_str = doc_io.getvalue()
 
-    ruta_excel = f"{base_nombre}_REPORTE.xlsx"
-    with pd.ExcelWriter(ruta_excel) as writer:
+    # Guardamos Excel en un BytesIO
+    excel_io = io.BytesIO()
+    with pd.ExcelWriter(excel_io, engine='openpyxl') as writer:
         pd.DataFrame(resumen_excel).to_excel(writer, sheet_name="BOM - Para Compras", index=False)
         pd.DataFrame(detalles_nodos_excel).to_excel(writer, sheet_name="Replanteo Topográfico", index=False)
+    excel_bytes = excel_io.getvalue()
     
-    return ruta_cad, ruta_excel, resumen_excel
+    return cad_str, excel_bytes, resumen_excel
 
-@app.post("/api/procesar")
-async def procesar_plano(
-    archivo_dxf: UploadFile = File(...),
-    archivo_excel: UploadFile = File(None)
-):
-    try:
-        dxf_path = f"/tmp/{archivo_dxf.filename}"
-        with open(dxf_path, "wb") as buffer:
-            shutil.copyfileobj(archivo_dxf.file, buffer)
-            
-        catalogo_dict = {}
-        if archivo_excel:
-            xls_path = f"/tmp/{archivo_excel.filename}"
-            file_ext = os.path.splitext(archivo_excel.filename)[1].lower()
-            
-            with open(xls_path, "wb") as buffer:
-                shutil.copyfileobj(archivo_excel.file, buffer)
-                
-            # --- NUEVO: Motor de Lectura Dinámica (Soporta CSV de tu ERP y Excel) ---
+def traducir_a_geometria(desc_str):
+    desc_str = str(desc_str).upper()
+    # Detecta "CURVA PVC 140 UF X 30°" -> Curva 30° de 140mm
+    m_curva = re.search(r'CURVA.*?PVC.*?\b(\d+)\b.*?X\s*(\d+)°?', desc_str)
+    if m_curva: return f"Curva {m_curva.group(2)}° de {m_curva.group(1)}mm"
+    
+    # Detecta "TEE REDUCCION PVC UF/SP 160MM X 90MM" -> Tee Reducida 160x90x160mm
+    m_tee_red = re.search(r'TEE\s+REDUC.*?\b(\d+)\s*M?M?\s*[X]\s*(\d+)\s*M?M?', desc_str)
+    if m_tee_red: return f"Tee Reducida {m_tee_red.group(1)}x{m_tee_red.group(2)}x{m_tee_red.group(1)}mm"
+    
+    # Detecta "TEE PVC UF 200 MM" -> Tee 200mm
+    m_tee = re.search(r'TEE\s+(?:RECTA\s+)?PVC.*?\b(\d+)\s*M?M?', desc_str)
+    if m_tee and not 'REDUC' in desc_str: return f"Tee {m_tee.group(1)}mm"
+    
+    # Detecta "REDUCCION PVC UF 160MM X 140MM" -> Reducción 160mm - 140mm
+    m_red = re.search(r'REDUCCI[OÓ]N.*?PVC.*?\b(\d+)\s*M?M?\s*[XA]\s*(\d+)\s*M?M?', desc_str)
+    if m_red and 'TEE' not in desc_str: return f"Reducción {m_red.group(1)}mm - {m_red.group(2)}mm"
+    return None
+
+
+def main():
+    st.set_page_config(page_title="Metrados de Riego ERP", layout="wide", page_icon="💧")
+    st.title("💧 Generador de Detalles y Metrados ERP")
+    st.markdown("""
+    Sube tu plano DXF para analizar la topología de la red, generar automáticamente 
+    los esquemas de nodos en CAD y calcular la lista de compras.
+    """)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        archivo_dxf = st.file_uploader("1️⃣ Sube tu archivo CAD (.dxf)", type=["dxf"])
+    with col2:
+        archivo_excel = st.file_uploader("2️⃣ Sube tu Catálogo Maestro (.xlsx o .csv) - Opcional", type=["xlsx", "csv"])
+
+    if st.button("Procesar Plano de Riego", type="primary"):
+        if archivo_dxf is None:
+            st.error("Por favor, sube un archivo DXF.")
+            return
+
+        with st.spinner("Analizando la red y leyendo base de datos..."):
             try:
-                if file_ext == '.csv':
-                    # Intenta leer como CSV separado por punto y coma (Formato de tu ERP)
+                catalogo_dict = {}
+                if archivo_excel is not None:
+                    file_ext = os.path.splitext(archivo_excel.name)[1].lower()
                     try:
-                        df_cat = pd.read_csv(xls_path, sep=';', encoding='utf-8-sig', on_bad_lines='skip')
-                        if len(df_cat.columns) == 1:
-                            df_cat = pd.read_csv(xls_path, sep=',', encoding='utf-8-sig', on_bad_lines='skip')
-                    except UnicodeDecodeError:
-                        df_cat = pd.read_csv(xls_path, sep=';', encoding='latin-1', on_bad_lines='skip')
-                else:
-                    df_cat = pd.read_excel(xls_path)
-            except Exception as e:
-                print(f"Advertencia al leer catálogo: {e}")
-                df_cat = pd.DataFrame()
-            
-            if not df_cat.empty:
-                cols_lower = [str(c).lower() for c in df_cat.columns]
-                # Encontrar columnas dinámicamente sin importar mayúsculas
-                col_cod = df_cat.columns[next((i for i, c in enumerate(cols_lower) if 'cód' in c or 'cod' in c or 'erp' in c), 0)]
-                col_desc = df_cat.columns[next((i for i, c in enumerate(cols_lower) if 'desc' in c or 'nom' in c), 1)]
-                
-                # --- NUEVO: MOTOR DE INTELIGENCIA (Auto-Mapeo por Regex) ---
-                def traducir_a_geometria(desc_str):
-                    desc_str = str(desc_str).upper()
-                    # Detecta "CURVA PVC 140 UF X 30°" -> Curva 30° de 140mm
-                    m_curva = re.search(r'CURVA.*?PVC.*?\b(\d+)\b.*?X\s*(\d+)°?', desc_str)
-                    if m_curva: return f"Curva {m_curva.group(2)}° de {m_curva.group(1)}mm"
-                    
-                    # Detecta "TEE REDUCCION PVC UF/SP 160MM X 90MM" -> Tee Reducida 160x90x160mm
-                    m_tee_red = re.search(r'TEE\s+REDUC.*?\b(\d+)\s*M?M?\s*[X]\s*(\d+)\s*M?M?', desc_str)
-                    if m_tee_red: return f"Tee Reducida {m_tee_red.group(1)}x{m_tee_red.group(2)}x{m_tee_red.group(1)}mm"
-                    
-                    # Detecta "TEE PVC UF 200 MM" -> Tee 200mm
-                    m_tee = re.search(r'TEE\s+(?:RECTA\s+)?PVC.*?\b(\d+)\s*M?M?', desc_str)
-                    if m_tee and not 'REDUC' in desc_str: return f"Tee {m_tee.group(1)}mm"
-                    
-                    # Detecta "REDUCCION PVC UF 160MM X 140MM" -> Reducción 160mm - 140mm
-                    m_red = re.search(r'REDUCCI[OÓ]N.*?PVC.*?\b(\d+)\s*M?M?\s*[XA]\s*(\d+)\s*M?M?', desc_str)
-                    if m_red and 'TEE' not in desc_str: return f"Reducción {m_red.group(1)}mm - {m_red.group(2)}mm"
-                    
-                    return None
-
-                for _, row in df_cat.iterrows():
-                    codigo_erp = str(row[col_cod]).strip()
-                    descripcion_erp = str(row[col_desc]).strip()
-                    
-                    # La app deduce por su cuenta a qué accesorio pertenece cada fila de tu ERP
-                    clave_geometrica = traducir_a_geometria(descripcion_erp)
-                    
-                    # Compatibilidad si en el futuro decides volver a usar la columna manual "Accesorio Geométrico"
-                    if 'accesorio' in ' '.join(cols_lower):
-                        idx_acc = next((i for i, c in enumerate(cols_lower) if 'accesorio' in c), -1)
-                        if idx_acc != -1 and pd.notna(row.iloc[idx_acc]):
-                            clave_geometrica = str(row.iloc[idx_acc]).strip()
+                        if file_ext == '.csv':
+                            try:
+                                df_cat = pd.read_csv(archivo_excel, sep=';', encoding='utf-8-sig', on_bad_lines='skip')
+                                if len(df_cat.columns) == 1:
+                                    archivo_excel.seek(0)
+                                    df_cat = pd.read_csv(archivo_excel, sep=',', encoding='utf-8-sig', on_bad_lines='skip')
+                            except UnicodeDecodeError:
+                                archivo_excel.seek(0)
+                                df_cat = pd.read_csv(archivo_excel, sep=';', encoding='latin-1', on_bad_lines='skip')
+                        else:
+                            df_cat = pd.read_excel(archivo_excel)
                             
-                    if clave_geometrica:
-                        catalogo_dict[clave_geometrica] = {
-                            "codigo": codigo_erp if codigo_erp and codigo_erp != 'nan' else "S.C.",
-                            "desc_oficial": descripcion_erp
-                        }
+                        if not df_cat.empty:
+                            cols_lower = [str(c).lower() for c in df_cat.columns]
+                            col_cod = df_cat.columns[next((i for i, c in enumerate(cols_lower) if 'cód' in c or 'cod' in c or 'erp' in c), 0)]
+                            col_desc = df_cat.columns[next((i for i, c in enumerate(cols_lower) if 'desc' in c or 'nom' in c), 1)]
+                            
+                            for _, row in df_cat.iterrows():
+                                codigo_erp = str(row[col_cod]).strip()
+                                descripcion_erp = str(row[col_desc]).strip()
+                                clave_geometrica = traducir_a_geometria(descripcion_erp)
+                                
+                                if 'accesorio' in ' '.join(cols_lower):
+                                    idx_acc = next((i for i, c in enumerate(cols_lower) if 'accesorio' in c), -1)
+                                    if idx_acc != -1 and pd.notna(row.iloc[idx_acc]):
+                                        clave_geometrica = str(row.iloc[idx_acc]).strip()
+                                        
+                                if clave_geometrica:
+                                    catalogo_dict[clave_geometrica] = {
+                                        "codigo": codigo_erp if codigo_erp and codigo_erp != 'nan' else "S.C.",
+                                        "desc_oficial": descripcion_erp
+                                    }
+                        st.success(f"✅ Catálogo procesado: {len(catalogo_dict)} accesorios mapeados.")
+                    except Exception as e:
+                        st.warning(f"No se pudo leer el catálogo correctamente: {e}")
 
-        # Ejecución Segura
-        resultado = analizar_plano(dxf_path, catalogo_dict)
-        if resultado == (None, None, []):
-            raise Exception("No se encontraron accesorios en el plano. Asegúrate de que las tuberías tengan asignado el color correcto.")
-            
-        ruta_cad_out, ruta_excel_out, resumen = resultado
+                # Guardar DXF en un archivo temporal seguro para ezdxf
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp_dxf:
+                    tmp_dxf.write(archivo_dxf.getvalue())
+                    tmp_path = tmp_dxf.name
 
-        with open(ruta_excel_out, "rb") as f:
-            excel_b64 = base64.b64encode(f.read()).decode("utf-8")
-        with open(ruta_cad_out, "rb") as f:
-            cad_b64 = base64.b64encode(f.read()).decode("utf-8")
+                cad_str, excel_bytes, resumen = analizar_plano(tmp_path, catalogo_dict)
+                os.remove(tmp_path) # Limpiamos
 
-        return {
-            "resumen": resumen,
-            "excel_base64": excel_b64,
-            "cad_base64": cad_b64
-        }
+                if not resumen:
+                    st.warning("No se encontraron accesorios en el plano. Revisa los colores y las polilíneas.")
+                    return
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+                st.success("¡Análisis completado con éxito!")
+                st.subheader("📋 Resumen de Requerimientos (BOM)")
+                st.dataframe(pd.DataFrame(resumen))
+
+                st.markdown("### Descarga de Entregables")
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    st.download_button(
+                        label="📥 Descargar Reporte Excel",
+                        data=excel_bytes,
+                        file_name=f"Metrados_{archivo_dxf.name.replace('.dxf', '')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                with col_d2:
+                    st.download_button(
+                        label="📥 Descargar Plano CAD (Detalles)",
+                        data=cad_str,
+                        file_name=f"Esquemas_{archivo_dxf.name}",
+                        mime="application/dxf",
+                        use_container_width=True
+                    )
+
+            except Exception as e:
+                st.error(f"Ocurrió un error crítico durante el análisis: {str(e)}")
+
+if __name__ == "__main__":
+    main()
